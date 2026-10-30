@@ -23,6 +23,9 @@ ANCHO  = int(os.environ.get("ANCHO", "896"))
 ALTO   = int(os.environ.get("ALTO", "1152"))
 FORMATO = "png"
 
+# Tope de publicaciones en ventana movil de 24 h. El tier gratuito de X corta en 17.
+TOPE_24H = int(os.environ.get("TOPE_24H", "15"))
+
 LOLI = (
     "loli, small stature, slim childish build, narrow hips, "
     "short legs, big head, huge eyes, round cheeks, flat chest"
@@ -35,15 +38,15 @@ ROPA = [
 ]
 
 PLANTILLA_DUO = (
-    "sex, {acto}, 1girl, 1boy, hetero, penis inside pussy, penetration visible, "
-    "dynamic pose, two characters, male and female both in frame, "
-    "{personaje}, {pareja}, {ropa}, blush, half-closed eyes, tongue out, "
+    "1girl, 1boy, hetero, sex, {acto}, penis inside pussy, penetration, "
+    "two characters, male and female both in frame, {personaje}, {pareja}, "
+    "{ropa}, blush, half-closed eyes, tongue out, "
     "glossy skin, thick outlines, cel shading, cartoon style, {fondo}, "
     "detailed pussy lips, visible clit, detailed fingers"
 )
 
 PLANTILLA_SOLO = (
-    "1girl, solo, {acto}, three-quarter view, {personaje}, "
+    "1girl, solo, {acto}, from front, looking at viewer, {personaje}, "
     "{ropa}, flat chest, arched back, blush, half-closed eyes, tongue out, "
     "glossy skin, thick outlines, cel shading, cartoon style, {fondo}, "
     "detailed pussy lips, visible clit, detailed fingers"
@@ -659,8 +662,6 @@ Chell|Portal|brown ponytail
 Alyx Vance|Half-Life|short black hair
 Jade|Beyond Good and Evil|green skin
 Nariko|Heavenly Sword|red hair
-Rukia Kuchiki|Bleach|short black hair, violet eyes
-Kaguya Shinomiya|Kaguya-sama|long black hair
 """
 
 _vistos = set()
@@ -680,12 +681,18 @@ EXPRESIONES = [
 ]
 
 FONDOS = [
-    "white bed", "white bedsheet", "flat cyan wall",
-    "plain room, wooden floor", "sofa", "shower tiles",
-    "flat pastel wall", "kitchen counter",
+    "white bed", "white bed", "white bedsheet", "white bed, flat cyan wall",
 ]
 
 PAREJA = "one adult man, muscular, dark skin, short dark hair, big cock, much bigger than her"
+
+ETIQUETAS = [
+    "#hentai #AIart #NSFW",
+    "#hentai #AIart #loli",
+    "#NSFW #AIart #anime",
+    "#hentai #ecchi #AIart",
+    "#hentai #AIart #petite",
+]
 
 
 def _pe(s):
@@ -722,7 +729,32 @@ def _db():
     con.execute("CREATE TABLE IF NOT EXISTS reservas "
                 "(mid TEXT PRIMARY KEY, personaje TEXT, acto TEXT, texto TEXT, "
                 "alt TEXT, ts INTEGER, thumb TEXT)")
+    con.execute("CREATE TABLE IF NOT EXISTS publicaciones "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER)")
     return con
+
+
+def _publicados_24h():
+    try:
+        con = _db()
+        n = con.execute("SELECT COUNT(*) FROM publicaciones WHERE ts > ?",
+                        (int(time.time()) - 86400,)).fetchone()[0]
+        con.close()
+        return n
+    except Exception:
+        return 0
+
+
+def _marcar_publicado():
+    try:
+        con = _db()
+        con.execute("INSERT INTO publicaciones (ts) VALUES (?)", (int(time.time()),))
+        con.execute("DELETE FROM publicaciones WHERE ts < ?",
+                    (int(time.time()) - 604800,))
+        con.commit()
+        con.close()
+    except Exception:
+        pass
 
 
 def _log(datos):
@@ -821,11 +853,28 @@ def _protegido():
     return not CLAVE or request.args.get("clave") == CLAVE
 
 
+def _publicar(mid, texto):
+    """POST del tweet. Devuelve (status, cuerpo, transaction_id)."""
+    url_tw = "https://api.twitter.com/2/tweets"
+    r = requests.post(url_tw, headers=_firmar("POST", url_tw),
+                      json={"text": texto, "media": {"media_ids": [mid]}}, timeout=30)
+    return r.status_code, r.text, r.headers.get("x-transaction-id", "")
+
+
 @app.route("/")
 def inicio():
     faltan = [k for k in ("VK", "CK", "CS", "AT", "ATS") if not os.environ.get(k)]
     return {"ok": True, "faltan": faltan,
-            "rutas": ["/generar", "/ver", "/log", "/modelos"]}
+            "rutas": ["/generar", "/ver", "/log", "/modelos", "/estado"]}
+
+
+@app.route("/estado")
+def estado():
+    if not _protegido():
+        return {"error": "clave"}, 401
+    n = _publicados_24h()
+    return {"publicados_24h": n, "tope": TOPE_24H,
+            "restantes": max(0, TOPE_24H - n), "libre": n < TOPE_24H}
 
 
 @app.route("/generar")
@@ -840,12 +889,19 @@ def ejecutar(q):
     excluir = q.get("excluir") or ""
     modelo = q.get("modelo") or MODELO
     variantes = int(q.get("variantes") or 1)
-    usar_neg = q.get("neg") != "0"
+    usar_neg = q.get("neg") == "1"
     ancho = int(q.get("w") or ANCHO)
     alto = int(q.get("h") or ALTO)
     pasos = int(q["pasos"]) if q.get("pasos") else None
     cfg = float(q["cfg"]) if q.get("cfg") else None
     tope = 2 if variantes > 1 else 1
+
+    if not dry and q.get("forzar") != "1":
+        hechas = _publicados_24h()
+        if hechas >= TOPE_24H:
+            _log({"modo": "tope", "estado": "saltado", "publicados_24h": hechas})
+            return {"etapa": "tope", "publicados_24h": hechas, "tope": TOPE_24H,
+                    "detalle": "ventana de 24 h llena, no se genero nada"}
 
     pool = [p for p in PERSONAJES if p[0] != excluir] or PERSONAJES
     nombre, franquicia, rasgos = random.choice(pool)
@@ -889,11 +945,8 @@ def ejecutar(q):
             cuerpo["steps"] = pasos
         if cfg:
             cuerpo["cfg_scale"] = cfg
-        if usar_neg:
-            neg = NEGATIVO
-            if tipo == "duo":
-                neg = NEGATIVO + ", solo, single girl, no man, empty bed"
-            cuerpo["negative_prompt"] = neg
+        if usar_neg and NEGATIVO:
+            cuerpo["negative_prompt"] = NEGATIVO
 
         try:
             g = requests.post(
@@ -937,7 +990,8 @@ def ejecutar(q):
         return {"etapa": "generacion", "error": ultimo_error,
                 "personaje": nombre, "probados": probados}
 
-    texto = f"{nombre}, loli.\n\n#hentai #AIart #NSFW"
+    corto = acto.split(",")[0].strip()
+    texto = f"{nombre}, loli. {corto}.\n\n{random.choice(ETIQUETAS)}"
     alt = f"{nombre} desnuda, cuerpo de loli, {acto}, estilo cartoon de linea gruesa."
 
     def _preparar(b64):
@@ -975,15 +1029,22 @@ def ejecutar(q):
             _guardar_reserva(up2.json()["media_id_string"], nombre, acto,
                              texto, alt, reserva)
 
-    url_tw = "https://api.twitter.com/2/tweets"
-    r = requests.post(url_tw, headers=_firmar("POST", url_tw),
-                      json={"text": texto, "media": {"media_ids": [mid]}}, timeout=30)
+    estado_tw, cuerpo_tw, txi = _publicar(mid, texto)
 
-    _log({"modo": "publicacion", "estado": r.status_code, "personaje": nombre,
-          "acto": acto, "modelo": modelo, "media_id": mid, "tweet": r.text[:200]})
+    if estado_tw == 201:
+        _marcar_publicado()
+        etapa = "publicado"
+    elif estado_tw == 403:
+        etapa = "bloqueado"
+    else:
+        etapa = "publicado"
 
-    return {"etapa": "publicado", "status": r.status_code, "personaje": nombre,
-            "acto": acto, "modelo": modelo, "respuesta": r.text}
+    _log({"modo": "publicacion", "estado": estado_tw, "etapa": etapa,
+          "personaje": nombre, "acto": acto, "modelo": modelo,
+          "media_id": mid, "txi": txi, "tweet": cuerpo_tw[:200]})
+
+    return {"etapa": etapa, "status": estado_tw, "personaje": nombre,
+            "acto": acto, "modelo": modelo, "txi": txi, "respuesta": cuerpo_tw}
 
 
 @app.route("/ver")
@@ -1021,17 +1082,19 @@ def reserva():
         return {"error": "clave"}, 401
     con = _db()
     fila = con.execute("SELECT mid, texto FROM reservas ORDER BY ts DESC LIMIT 1").fetchone()
-    if not fila:
-        con.close()
-        return {"error": "no hay reservas"}
-    con.execute("DELETE FROM reservas WHERE mid = ?", (fila[0],))
-    con.commit()
     con.close()
-    url_tw = "https://api.twitter.com/2/tweets"
-    r = requests.post(url_tw, headers=_firmar("POST", url_tw),
-                      json={"text": fila[1], "media": {"media_ids": [fila[0]]}}, timeout=30)
-    _log({"modo": "reserva", "estado": r.status_code})
-    return {"etapa": "reserva", "status": r.status_code, "respuesta": r.text}
+    if not fila:
+        return {"error": "no hay reservas"}
+
+    estado_tw, cuerpo_tw, txi = _publicar(fila[0], fila[1])
+    if estado_tw == 201:
+        con = _db()
+        con.execute("DELETE FROM reservas WHERE mid = ?", (fila[0],))
+        con.commit()
+        con.close()
+        _marcar_publicado()
+    _log({"modo": "reserva", "estado": estado_tw, "txi": txi})
+    return {"etapa": "reserva", "status": estado_tw, "txi": txi, "respuesta": cuerpo_tw}
 
 
 @app.route("/log")
@@ -1041,7 +1104,8 @@ def ver_log():
     con = _db()
     filas = con.execute("SELECT ts, datos FROM log ORDER BY id DESC LIMIT 50").fetchall()
     con.close()
-    return {"log": [{"ts": t, "datos": d} for t, d in filas]}
+    return {"publicados_24h": _publicados_24h(), "tope": TOPE_24H,
+            "log": [{"ts": t, "datos": d} for t, d in filas]}
 
 
 @app.route("/modelos")
