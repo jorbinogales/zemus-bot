@@ -16,7 +16,7 @@ ATS = os.environ.get("ATS", "")
 CLAVE = os.environ.get("CLAVE", "")
 DB_PATH = os.environ.get("DB_PATH", "datos.sqlite3")
 
-MODELO = os.environ.get("MODELO", "wai-Illustrious")
+MODELO = os.environ.get("MODELO", "lustify-v8")
 ANCHO  = int(os.environ.get("ANCHO", "896"))
 ALTO   = int(os.environ.get("ALTO", "1152"))
 FORMATO = "png"
@@ -833,14 +833,16 @@ def inicio():
 def generar():
     if not _protegido():
         return {"error": "clave"}, 401
-    q = request.args
+    return ejecutar(request.args)
+
+
+def ejecutar(q):
     dry = q.get("dry") == "1"
     excluir = q.get("excluir") or ""
     loli_on = (q.get("loli") or ("1" if MODO_LOLI else "0")) == "1"
     modelo = q.get("modelo") or MODELO
     variantes = int(q.get("variantes") or 1)
     usar_neg = q.get("neg") == "1"
-    semilla = int(q.get("seed") or random.randint(1, 999999999))
     ancho = int(q.get("w") or ANCHO)
     alto = int(q.get("h") or ALTO)
     pasos = int(q["pasos"]) if q.get("pasos") else None
@@ -850,33 +852,42 @@ def generar():
     pool = [p for p in PERSONAJES if p[0] != excluir] or PERSONAJES
     nombre, franquicia, rasgos = random.choice(pool)
 
+    p_actos = ACTOS
+    if loli_on and random.random() < 0.75:
+        p_actos = [a for a in ACTOS if a[1] == "duo"]
+    acto, tipo = random.choice(p_actos)
+    expresion = random.choice(EXPRESIONES)
+    fondo = random.choice(FONDOS)
+
+    base_pj = f"{nombre} from {franquicia}, {rasgos}"
+    if loli_on:
+        base_pj = f"{base_pj}, {LOLI}"
+    if tipo == "duo":
+        base_pj = f"{base_pj}, 1boy, {PAREJA}"
+    else:
+        base_pj = base_pj.replace("hetero, ", "")
+
+    prompt = q.get("prompt") or PLANTILLA.format(
+        acto=acto, personaje=base_pj, fondo=fondo)
+    prompt_simple = f"{FALLBACK_ESTILO}, {base_pj}, {acto}, {fondo}"
+
+    plan = []
+    for _ in range(4):
+        plan.append((modelo, prompt))
+    for _ in range(2):
+        plan.append((modelo, prompt_simple))
+    plan.append(("lustify-v7", prompt_simple))
+    plan.append(("lustify-sdxl", prompt_simple))
+    plan.append(("wai-Illustrious", "1girl, naked, white bed"))
+
     imagenes = []
     ultimo_error = None
-    usados = []
+    probados = []
 
-    for _ in range(6):
-        p_actos = ACTOS
-        if loli_on and random.random() < 0.75:
-            p_actos = [a for a in ACTOS if a[1] == "duo"]
-        acto, tipo = random.choice(p_actos)
-        usados.append(acto)
-        expresion = random.choice(EXPRESIONES)
-        fondo = random.choice(FONDOS)
-
-        base_pj = f"{nombre} from {franquicia}, {rasgos}"
-        if loli_on:
-            base_pj = f"{base_pj}, {LOLI}"
-        if tipo == "duo":
-            base_pj = f"{base_pj}, 1boy, {PAREJA}"
-        else:
-            base_pj = base_pj.replace("hetero, ", "")
-
-        prompt = q.get("prompt") or PLANTILLA.format(
-            acto=acto, personaje=base_pj, fondo=fondo)
-
-        cuerpo = {"model": modelo, "prompt": prompt, "width": ancho, "height": alto,
+    for mod, prom in plan:
+        cuerpo = {"model": mod, "prompt": prom, "width": ancho, "height": alto,
                   "format": FORMATO, "variants": variantes,
-                  "safe_mode": False, "seed": semilla}
+                  "safe_mode": False, "seed": random.randint(1, 999999999)}
         if pasos:
             cuerpo["steps"] = pasos
         if cfg:
@@ -884,66 +895,47 @@ def generar():
         if usar_neg and NEGATIVO:
             cuerpo["negative_prompt"] = NEGATIVO
 
-        g = requests.post(
-            "https://api.venice.ai/api/v1/image/generate",
-            headers={"Authorization": f"Bearer {VK}", "Content-Type": "application/json"},
-            json=cuerpo, timeout=240)
-
-        if g.status_code == 200:
-            lista = g.json().get("images") or []
-            if lista and not _negro(lista[0]):
-                imagenes = lista[:tope]
-                break
-            ultimo_error = "negra" if lista else "respuesta sin imagen"
-            semilla = random.randint(1, 999999999)
+        try:
+            g = requests.post(
+                "https://api.venice.ai/api/v1/image/generate",
+                headers={"Authorization": f"Bearer {VK}",
+                         "Content-Type": "application/json"},
+                json=cuerpo, timeout=240)
+        except Exception:
+            probados.append(mod + ":ex")
             continue
-        else:
-            ultimo_error = f"{g.status_code}: {g.text[:200]}"
-            if g.status_code in (400, 401, 402, 403, 429):
-                _log({"modo": "generacion", "estado": g.status_code, "error": ultimo_error})
-                return {"etapa": "generacion", "status": g.status_code,
-                        "detalle": g.text[:300]}
 
-    modelos_probados = [modelo]
-    if imagenes and _negro(imagenes[0]):
-        prompt_simple = f"{FALLBACK_ESTILO}, {base_pj}, {acto}, {fondo}"
-        plan = [(modelo, prompt_simple), (modelo, prompt_simple),
-                (modelo, prompt_simple), ("chroma", prompt_simple),
-                ("z-image-turbo", prompt_simple),
-                (modelo, "1girl, naked, white bed")]
-        for mod_fb, prom_fb in plan:
-            cuerpo = {"model": mod_fb, "prompt": prom_fb, "width": ancho,
-                      "height": alto, "format": FORMATO, "variants": variantes,
-                      "safe_mode": False, "seed": random.randint(1, 999999999)}
-            try:
-                gf = requests.post(
-                    "https://api.venice.ai/api/v1/image/generate",
-                    headers={"Authorization": f"Bearer {VK}",
-                             "Content-Type": "application/json"},
-                    json=cuerpo, timeout=240)
-            except Exception:
-                modelos_probados.append(mod_fb + ":ex")
-                continue
-            if gf.status_code != 200:
-                modelos_probados.append(f"{mod_fb}:{gf.status_code}")
-                continue
-            otra = (gf.json().get("images") or [])[:tope]
-            modelos_probados.append(f"{mod_fb}:{len(otra)}")
-            if otra and not _negro(otra[0]):
-                imagenes = otra
-                prompt = prom_fb
-                modelo = mod_fb
-                _log({"modo": "rescate", "modelo": mod_fb, "personaje": nombre})
+        if g.status_code == 429:
+            probados.append(mod + ":429")
+            time.sleep(6)
+            continue
+        if g.status_code != 200:
+            probados.append(f"{mod}:{g.status_code}")
+            ultimo_error = f"{g.status_code}: {g.text[:200]}"
+            if g.status_code in (400, 401, 402, 403):
                 break
-        else:
-            imagenes = []
-            ultimo_error = "todos los modelos devolvieron negro"
+            continue
+
+        lista = g.json().get("images") or []
+        if not lista:
+            probados.append(mod + ":vacio")
+            ultimo_error = "respuesta sin imagen"
+            continue
+        if _negro(lista[0]):
+            probados.append(mod + ":negro")
+            ultimo_error = "imagen negra"
+            continue
+
+        imagenes = lista[:tope]
+        prompt = prom
+        modelo = mod
+        break
 
     if not imagenes:
         _log({"modo": "generacion", "estado": "sin_imagen", "error": ultimo_error,
-              "personaje": nombre, "actos": usados, "modelos": modelos_probados})
+              "personaje": nombre, "acto": acto, "probados": probados})
         return {"etapa": "generacion", "error": ultimo_error,
-                "personaje": nombre, "modelos_probados": modelos_probados}
+                "personaje": nombre, "probados": probados}
 
     texto = f"{nombre}, loli, doggystyle.\n\n#hentai #AIart #NSFW"
     alt = f"{nombre} desnuda, {acto}, estilo cartoon de linea gruesa."
@@ -960,9 +952,8 @@ def generar():
     if dry:
         im0 = Image.open(io.BytesIO(base64.b64decode(imagenes[0])))
         return {"etapa": "dry-run", "modelo": modelo, "modo": im0.mode,
-                "tam": list(im0.size),
-                "lum": im0.convert("L").getextrema(),
-                "modelos_probados": modelos_probados, "prompt": prompt}
+                "tam": list(im0.size), "lum": im0.convert("L").getextrema(),
+                "probados": probados, "prompt": prompt}
 
     url_up = "https://upload.twitter.com/1.1/media/upload.json"
     up = requests.post(url_up, headers=_firmar("POST", url_up),
@@ -989,10 +980,10 @@ def generar():
                       json={"text": texto, "media": {"media_ids": [mid]}}, timeout=30)
 
     _log({"modo": "publicacion", "estado": r.status_code, "personaje": nombre,
-          "acto": acto, "media_id": mid, "tweet": r.text[:200]})
+          "acto": acto, "modelo": modelo, "media_id": mid, "tweet": r.text[:200]})
 
     return {"etapa": "publicado", "status": r.status_code, "personaje": nombre,
-            "acto": acto, "respuesta": r.text}
+            "acto": acto, "modelo": modelo, "respuesta": r.text}
 
 
 @app.route("/ver")
@@ -1009,7 +1000,7 @@ def ver():
                  f"<div>{img}</div><div><b>{pj}</b><br><small>{acto}</small><br>"
                  f"<small>{time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}</small><br>"
                  f"<a style='color:#e06' href='/borrar?mid={mid}'>borrar</a></div></div>")
-    html += f"<p><a style='color:#0f0' href='/reserva'>publicar la última</a></p></body>"
+    html += "<p><a style='color:#0f0' href='/reserva'>publicar la última</a></p></body>"
     return Response(html, mimetype="text/html")
 
 
