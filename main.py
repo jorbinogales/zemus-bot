@@ -23,8 +23,8 @@ ANCHO  = int(os.environ.get("ANCHO", "896"))
 ALTO   = int(os.environ.get("ALTO", "1152"))
 FORMATO = "png"
 
-# Tope de publicaciones en ventana movil de 24 h. El tier gratuito de X corta en 17.
 TOPE_24H = int(os.environ.get("TOPE_24H", "15"))
+P_DUO = float(os.environ.get("P_DUO", "0.92"))
 
 LOLI = (
     "loli, small stature, slim childish build, narrow hips, "
@@ -32,24 +32,65 @@ LOLI = (
 )
 
 ROPA = [
-    "nude", "nude, thigh-high socks", "nude, oversized t-shirt",
+    "nude", "nude", "nude, thigh-high socks", "nude, oversized t-shirt",
     "nude, open school uniform", "nude, only a collar",
     "nude, white panties pulled aside", "nude, sailor uniform open",
+    "nude, shirt pulled up over her chest", "nude, skirt bunched at the waist",
+    "nude, one sock on", "topless, shorts around one ankle",
+]
+
+# --- ranuras: la cantidad de tags cambia en cada corrida ---
+
+ANGULOS = [
+    "from the side", "three-quarter view", "from behind", "low angle",
+    "slightly high angle", "profile view", "over his shoulder", "from below",
+    "camera close and low", "slightly tilted camera",
+]
+
+ENCUADRES = [
+    "full body in frame", "medium shot", "cowboy shot", "close on her hips",
+    "close on the penetration", "both faces visible", "wide framing",
+    "tight framing on her upper body", "full body, feet visible",
+]
+
+LUCES = [
+    "hard rim light", "flat bright light", "warm lamp light",
+    "cool window light", "soft bounce light", "single overhead light",
+    "backlit silhouette edge", "even flat lighting",
+]
+
+FONDOS = [
+    "flat cyan wall", "flat warm grey wall", "flat pale pink wall",
+    "white bedsheet", "wooden floor and flat wall", "tiled bathroom, shower",
+    "grey couch", "wooden kitchen counter", "dark green wall and wooden table",
+    "tatami room", "balcony at night, city lights", "school classroom desk",
+    "wooden desk and white wall", "gym mat and concrete wall",
+    "café booth", "marble counter", "stone wall at dusk",
+    "flat teal blue wall", "curtain and window light", "bare brick wall",
+]
+
+DETALLES = [
+    "sweat on her skin", "love juice dripping", "cum on her stomach",
+    "nipples hard", "her toes curling", "hands gripping the sheets",
+    "trembling thighs", "blush across her whole face", "messy hair",
+    "red handprints on her hips", "steam in the air", "wet hair on her neck",
+    "cum dripping down her thigh", "her back arching hard",
+    "a thin strand of saliva", "goosebumps on her arms",
+    "cock visibly bulging her belly", "her legs shaking",
+    "fingers digging into his arm", "drool on her chin",
 ]
 
 PLANTILLA_DUO = (
     "1girl, 1boy, hetero, sex, {acto}, penis inside pussy, penetration, "
     "two characters, male and female both in frame, {personaje}, {pareja}, "
-    "{ropa}, blush, half-closed eyes, tongue out, "
-    "glossy skin, thick outlines, cel shading, cartoon style, {fondo}, "
-    "detailed pussy lips, visible clit, detailed fingers"
+    "{ropa}, {expresion}, {encuadre}, {angulo}, {detalles}, "
+    "glossy skin, thick outlines, cel shading, cartoon style, {luz}, {fondo}"
 )
 
 PLANTILLA_SOLO = (
-    "1girl, solo, {acto}, from front, looking at viewer, {personaje}, "
-    "{ropa}, flat chest, arched back, blush, half-closed eyes, tongue out, "
-    "glossy skin, thick outlines, cel shading, cartoon style, {fondo}, "
-    "detailed pussy lips, visible clit, detailed fingers"
+    "1girl, solo, {acto}, upright pose, {personaje}, {ropa}, flat chest, "
+    "arched back, {expresion}, {encuadre}, {angulo}, {detalles}, "
+    "glossy skin, thick outlines, cel shading, cartoon style, {luz}, {fondo}"
 )
 
 NEGATIVO = (
@@ -59,6 +100,11 @@ NEGATIVO = (
     "cropped head, matte skin, dull skin, soft shading, airbrush, gradient, "
     "painterly, 3d render, thin uniform lineart, sketch, pastel, "
     "adult woman, tall, curvy, big breasts"
+)
+
+NEG_DUO = (
+    "solo, single girl, only one character, no man, empty bed, "
+    "lying alone, standing alone, wide empty room"
 )
 
 FALLBACK_ESTILO = (
@@ -678,10 +724,11 @@ EXPRESIONES = [
     "blush, biting lip, half-closed eyes",
     "ahegao, tongue out, sweat",
     "blush, wide eyes, open mouth",
-]
-
-FONDOS = [
-    "white bed", "white bed", "white bedsheet", "white bed, flat cyan wall",
+    "flushed face, eyes squeezed shut, mouth open",
+    "blush, teary eyes, panting",
+    "smirk, blush, one eye closed",
+    "dazed expression, drooling",
+    "blush, looking over her shoulder, mouth open",
 ]
 
 PAREJA = "one adult man, muscular, dark skin, short dark hair, big cock, much bigger than her"
@@ -853,6 +900,18 @@ def _protegido():
     return not CLAVE or request.args.get("clave") == CLAVE
 
 
+def _pick(lista, minimo=1, maximo=None):
+    """Cantidad aleatoria de tags en cada corrida."""
+    n = random.randint(minimo, maximo or minimo)
+    return random.sample(lista, min(n, len(lista)))
+
+
+def _negativo(tipo):
+    if tipo == "duo":
+        return f"{NEGATIVO}, {NEG_DUO}"
+    return NEGATIVO
+
+
 def _publicar(mid, texto):
     """POST del tweet. Devuelve (status, cuerpo, transaction_id)."""
     url_tw = "https://api.twitter.com/2/tweets"
@@ -907,22 +966,29 @@ def ejecutar(q):
     nombre, franquicia, rasgos = random.choice(pool)
 
     if q.get("solo") == "1":
-        p_actos = [a for a in ACTOS if a[1] == "solo"]
-    elif random.random() < 0.9:
-        p_actos = [a for a in ACTOS if a[1] == "duo"]
+        acto, tipo = random.choice([(a, "solo") for a in __import__("posiciones").SOLO])
+    elif random.random() < P_DUO:
+        acto, tipo = random.choice([(a, "duo") for a in __import__("posiciones").DUO])
     else:
-        p_actos = ACTOS
-    acto, tipo = random.choice(p_actos)
-    expresion = random.choice(EXPRESIONES)
-    fondo = random.choice(FONDOS)
-    ropa = q.get("ropa") or random.choice(ROPA)
+        acto, tipo = random.choice([(a, "solo") for a in __import__("posiciones").SOLO])
 
     base_pj = f"{nombre} from {franquicia}, {rasgos}, {LOLI}"
+    ropa = q.get("ropa") or random.choice(ROPA)
+
+    # ranuras con cantidad variable: el largo del prompt cambia cada vez
+    detalles = ", ".join(_pick(DETALLES, 1, 3))
+    encuadre = random.choice(_pick(ENCUADRES, 1, 2))
+    angulo = random.choice(ANGULOS)
+    luz = random.choice(_pick(LUCES, 1, 2))
+    fondo = random.choice(FONDOS)
 
     plantilla = PLANTILLA_DUO if tipo == "duo" else PLANTILLA_SOLO
     prompt = q.get("prompt") or plantilla.format(
-        acto=acto, personaje=base_pj, pareja=PAREJA, ropa=ropa, fondo=fondo)
+        acto=acto, personaje=base_pj, pareja=PAREJA, ropa=ropa,
+        expresion=random.choice(EXPRESIONES), encuadre=encuadre,
+        angulo=angulo, detalles=detalles, luz=luz, fondo=fondo)
     prompt_simple = f"{FALLBACK_ESTILO}, {base_pj}, {acto}, {fondo}"
+    negativo = _negativo(tipo)
 
     plan = []
     for _ in range(4):
@@ -931,7 +997,7 @@ def ejecutar(q):
         plan.append((modelo, prompt_simple))
     plan.append(("lustify-v7", prompt_simple))
     plan.append(("lustify-sdxl", prompt_simple))
-    plan.append(("wai-Illustrious", "1girl, naked, white bed"))
+    plan.append(("wai-Illustrious", f"1girl, naked, {acto}, {fondo}"))
 
     imagenes = []
     ultimo_error = None
@@ -945,8 +1011,8 @@ def ejecutar(q):
             cuerpo["steps"] = pasos
         if cfg:
             cuerpo["cfg_scale"] = cfg
-        if usar_neg and NEGATIVO:
-            cuerpo["negative_prompt"] = NEGATIVO
+        if usar_neg and negativo:
+            cuerpo["negative_prompt"] = negativo
 
         try:
             g = requests.post(
@@ -1007,7 +1073,7 @@ def ejecutar(q):
         im0 = Image.open(io.BytesIO(base64.b64decode(imagenes[0])))
         return {"etapa": "dry-run", "modelo": modelo, "modo": im0.mode,
                 "tam": list(im0.size), "lum": im0.convert("L").getextrema(),
-                "probados": probados, "prompt": prompt}
+                "probados": probados, "prompt": prompt, "negativo": negativo}
 
     url_up = "https://upload.twitter.com/1.1/media/upload.json"
     up = requests.post(url_up, headers=_firmar("POST", url_up),
