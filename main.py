@@ -8,11 +8,11 @@ from PIL import Image, ImageDraw, ImageFilter
 app = Flask(__name__)
 
 FIRMA_URL = os.environ.get("FIRMA_URL", "")
-VK  = os.environ["VK"]
-CK  = os.environ["CK"]
-CS  = os.environ["CS"]
-AT  = os.environ["AT"]
-ATS = os.environ["ATS"]
+VK  = os.environ.get("VK", "")
+CK  = os.environ.get("CK", "")
+CS  = os.environ.get("CS", "")
+AT  = os.environ.get("AT", "")
+ATS = os.environ.get("ATS", "")
 CLAVE = os.environ.get("CLAVE", "")
 DB_PATH = os.environ.get("DB_PATH", "datos.sqlite3")
 
@@ -824,7 +824,9 @@ def _protegido():
 
 @app.route("/")
 def inicio():
-    return {"ok": True, "rutas": ["/generar", "/ver", "/log", "/modelos"]}
+    faltan = [k for k in ("VK", "CK", "CS", "AT", "ATS") if not os.environ.get(k)]
+    return {"ok": True, "faltan": faltan,
+            "rutas": ["/generar", "/ver", "/log", "/modelos"]}
 
 
 @app.route("/generar")
