@@ -5,6 +5,8 @@ import requests
 from flask import Flask, Response, request
 from PIL import Image, ImageDraw, ImageFilter
 
+from posiciones import ACTOS
+
 app = Flask(__name__)
 
 FIRMA_URL = os.environ.get("FIRMA_URL", "")
@@ -20,16 +22,29 @@ MODELO = os.environ.get("MODELO", "lustify-v8")
 ANCHO  = int(os.environ.get("ANCHO", "896"))
 ALTO   = int(os.environ.get("ALTO", "1152"))
 FORMATO = "png"
-MODO_LOLI = True
 
 LOLI = (
     "loli, small stature, slim childish build, narrow hips, "
-    "short legs, big head, huge eyes, round cheeks"
+    "short legs, big head, huge eyes, round cheeks, flat chest"
 )
 
-PLANTILLA = (
-    "1girl, petite, hetero, {acto}, from front, looking at viewer, {personaje}, "
-    "nude, flat chest, arched back, blush, half-closed eyes, tongue out, "
+ROPA = [
+    "nude", "nude, thigh-high socks", "nude, oversized t-shirt",
+    "nude, open school uniform", "nude, only a collar",
+    "nude, white panties pulled aside", "nude, sailor uniform open",
+]
+
+PLANTILLA_DUO = (
+    "1girl, 1boy, hetero, sex, {acto}, penis inside pussy, penetration, "
+    "two characters, male and female both in frame, {personaje}, {pareja}, "
+    "{ropa}, blush, half-closed eyes, tongue out, "
+    "glossy skin, thick outlines, cel shading, cartoon style, {fondo}, "
+    "detailed pussy lips, visible clit, detailed fingers"
+)
+
+PLANTILLA_SOLO = (
+    "1girl, solo, {acto}, from front, looking at viewer, {personaje}, "
+    "{ropa}, flat chest, arched back, blush, half-closed eyes, tongue out, "
     "glossy skin, thick outlines, cel shading, cartoon style, {fondo}, "
     "detailed pussy lips, visible clit, detailed fingers"
 )
@@ -39,7 +54,8 @@ NEGATIVO = (
     "missing fingers, fused fingers, deformed, mutated, extra limbs, "
     "watermark, text, lettering, poster text, signature, blurry, jpeg artifacts, "
     "cropped head, matte skin, dull skin, soft shading, airbrush, gradient, "
-    "painterly, 3d render, thin uniform lineart, sketch, pastel"
+    "painterly, 3d render, thin uniform lineart, sketch, pastel, "
+    "adult woman, tall, curvy, big breasts"
 )
 
 FALLBACK_ESTILO = (
@@ -655,25 +671,6 @@ for _l in CATALOGO.strip().splitlines():
         _vistos.add(_p[0])
         PERSONAJES.append(tuple(_p))
 
-ACTOS = [
-    ("doggystyle, man behind her, arched back", "duo"),
-    ("doggystyle, ass up high, back arched, looking back at viewer", "duo"),
-    ("masturbating, two fingers inside her pussy, legs spread wide", "solo"),
-    ("rubbing her clit, hips bucking, toes curled", "solo"),
-    ("dildo penetration, hand on the base", "solo"),
-    ("presenting herself, ass up high, pussy and asshole visible", "solo"),
-    ("lying on back, knees pulled up and spread wide, pussy exposed", "solo"),
-    ("squatting over a toy, facing the viewer", "solo"),
-    ("missionary penetration, legs lifted and spread", "duo"),
-    ("cowgirl, riding, facing the viewer, hands on his chest", "duo"),
-    ("standing fuck, lifted and pinned against a wall", "duo"),
-    ("blowjob, kneeling, cock in her mouth, eyes up", "duo"),
-    ("cumshot on her face, tongue out", "duo"),
-    ("creampie, cum dripping from her pussy", "duo"),
-    ("carried in his arms, impaled on his cock, feet off the ground", "duo"),
-    ("sitting on his lap, cock buried inside her, arms around his neck", "duo"),
-]
-
 EXPRESIONES = [
     "blush, half-closed eyes, tongue out",
     "heavy blush, half-closed eyes, tongue out, sweat",
@@ -686,7 +683,7 @@ FONDOS = [
     "white bed", "white bed", "white bedsheet", "white bed, flat cyan wall",
 ]
 
-PAREJA = "one adult man, muscular, dark skin, short dark hair, big cock, size difference"
+PAREJA = "one adult man, muscular, dark skin, short dark hair, big cock, much bigger than her"
 
 
 def _pe(s):
@@ -839,7 +836,6 @@ def generar():
 def ejecutar(q):
     dry = q.get("dry") == "1"
     excluir = q.get("excluir") or ""
-    loli_on = (q.get("loli") or ("1" if MODO_LOLI else "0")) == "1"
     modelo = q.get("modelo") or MODELO
     variantes = int(q.get("variantes") or 1)
     usar_neg = q.get("neg") == "1"
@@ -852,23 +848,22 @@ def ejecutar(q):
     pool = [p for p in PERSONAJES if p[0] != excluir] or PERSONAJES
     nombre, franquicia, rasgos = random.choice(pool)
 
-    p_actos = ACTOS
-    if loli_on and random.random() < 0.75:
+    if q.get("solo") == "1":
+        p_actos = [a for a in ACTOS if a[1] == "solo"]
+    elif random.random() < 0.9:
         p_actos = [a for a in ACTOS if a[1] == "duo"]
+    else:
+        p_actos = ACTOS
     acto, tipo = random.choice(p_actos)
     expresion = random.choice(EXPRESIONES)
     fondo = random.choice(FONDOS)
+    ropa = q.get("ropa") or random.choice(ROPA)
 
-    base_pj = f"{nombre} from {franquicia}, {rasgos}"
-    if loli_on:
-        base_pj = f"{base_pj}, {LOLI}"
-    if tipo == "duo":
-        base_pj = f"{base_pj}, 1boy, {PAREJA}"
-    else:
-        base_pj = base_pj.replace("hetero, ", "")
+    base_pj = f"{nombre} from {franquicia}, {rasgos}, {LOLI}"
 
-    prompt = q.get("prompt") or PLANTILLA.format(
-        acto=acto, personaje=base_pj, fondo=fondo)
+    plantilla = PLANTILLA_DUO if tipo == "duo" else PLANTILLA_SOLO
+    prompt = q.get("prompt") or plantilla.format(
+        acto=acto, personaje=base_pj, pareja=PAREJA, ropa=ropa, fondo=fondo)
     prompt_simple = f"{FALLBACK_ESTILO}, {base_pj}, {acto}, {fondo}"
 
     plan = []
@@ -937,8 +932,8 @@ def ejecutar(q):
         return {"etapa": "generacion", "error": ultimo_error,
                 "personaje": nombre, "probados": probados}
 
-    texto = f"{nombre}, loli, doggystyle.\n\n#hentai #AIart #NSFW"
-    alt = f"{nombre} desnuda, {acto}, estilo cartoon de linea gruesa."
+    texto = f"{nombre}, loli.\n\n#hentai #AIart #NSFW"
+    alt = f"{nombre} desnuda, cuerpo de loli, {acto}, estilo cartoon de linea gruesa."
 
     def _preparar(b64):
         d = base64.b64decode(b64)
