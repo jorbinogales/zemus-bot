@@ -852,7 +852,7 @@ def generar():
     ultimo_error = None
     usados = []
 
-    for _ in range(3):
+    for _ in range(6):
         p_actos = ACTOS
         if loli_on and random.random() < 0.75:
             p_actos = [a for a in ACTOS if a[1] == "duo"]
@@ -889,10 +889,12 @@ def generar():
 
         if g.status_code == 200:
             lista = g.json().get("images") or []
-            if lista:
+            if lista and not _negro(lista[0]):
                 imagenes = lista[:tope]
                 break
-            ultimo_error = "respuesta sin imagen"
+            ultimo_error = "negra" if lista else "respuesta sin imagen"
+            semilla = random.randint(1, 999999999)
+            continue
         else:
             ultimo_error = f"{g.status_code}: {g.text[:200]}"
             if g.status_code in (400, 401, 402, 403, 429):
@@ -903,7 +905,8 @@ def generar():
     modelos_probados = [modelo]
     if imagenes and _negro(imagenes[0]):
         prompt_simple = f"{FALLBACK_ESTILO}, {base_pj}, {acto}, {fondo}"
-        plan = [(modelo, prompt_simple), ("chroma", prompt_simple),
+        plan = [(modelo, prompt_simple), (modelo, prompt_simple),
+                (modelo, prompt_simple), ("chroma", prompt_simple),
                 ("z-image-turbo", prompt_simple),
                 (modelo, "1girl, naked, white bed")]
         for mod_fb, prom_fb in plan:
