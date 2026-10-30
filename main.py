@@ -35,15 +35,15 @@ ROPA = [
 ]
 
 PLANTILLA_DUO = (
-    "1girl, 1boy, hetero, sex, {acto}, penis inside pussy, penetration, "
-    "two characters, male and female both in frame, {personaje}, {pareja}, "
-    "{ropa}, blush, half-closed eyes, tongue out, "
+    "sex, {acto}, 1girl, 1boy, hetero, penis inside pussy, penetration visible, "
+    "dynamic pose, two characters, male and female both in frame, "
+    "{personaje}, {pareja}, {ropa}, blush, half-closed eyes, tongue out, "
     "glossy skin, thick outlines, cel shading, cartoon style, {fondo}, "
     "detailed pussy lips, visible clit, detailed fingers"
 )
 
 PLANTILLA_SOLO = (
-    "1girl, solo, {acto}, from front, looking at viewer, {personaje}, "
+    "1girl, solo, {acto}, three-quarter view, {personaje}, "
     "{ropa}, flat chest, arched back, blush, half-closed eyes, tongue out, "
     "glossy skin, thick outlines, cel shading, cartoon style, {fondo}, "
     "detailed pussy lips, visible clit, detailed fingers"
@@ -680,7 +680,9 @@ EXPRESIONES = [
 ]
 
 FONDOS = [
-    "white bed", "white bed", "white bedsheet", "white bed, flat cyan wall",
+    "white bed", "white bedsheet", "flat cyan wall",
+    "plain room, wooden floor", "sofa", "shower tiles",
+    "flat pastel wall", "kitchen counter",
 ]
 
 PAREJA = "one adult man, muscular, dark skin, short dark hair, big cock, much bigger than her"
@@ -838,7 +840,7 @@ def ejecutar(q):
     excluir = q.get("excluir") or ""
     modelo = q.get("modelo") or MODELO
     variantes = int(q.get("variantes") or 1)
-    usar_neg = q.get("neg") == "1"
+    usar_neg = q.get("neg") != "0"
     ancho = int(q.get("w") or ANCHO)
     alto = int(q.get("h") or ALTO)
     pasos = int(q["pasos"]) if q.get("pasos") else None
@@ -887,8 +889,11 @@ def ejecutar(q):
             cuerpo["steps"] = pasos
         if cfg:
             cuerpo["cfg_scale"] = cfg
-        if usar_neg and NEGATIVO:
-            cuerpo["negative_prompt"] = NEGATIVO
+        if usar_neg:
+            neg = NEGATIVO
+            if tipo == "duo":
+                neg = NEGATIVO + ", solo, single girl, no man, empty bed"
+            cuerpo["negative_prompt"] = neg
 
         try:
             g = requests.post(
