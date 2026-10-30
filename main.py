@@ -1,10 +1,11 @@
-import base64, hashlib, hmac, io, os, random, sqlite3, time, uuid
+import base64, calendar, hashlib, hmac, io, os, random, sqlite3, time, uuid
 from urllib.parse import quote
 
 import requests
 from flask import Flask, Response, request
 from PIL import Image, ImageDraw, ImageFilter
 
+import posiciones
 from posiciones import ACTOS
 
 app = Flask(__name__)
@@ -25,6 +26,7 @@ FORMATO = "png"
 
 TOPE_24H = int(os.environ.get("TOPE_24H", "15"))
 P_DUO = float(os.environ.get("P_DUO", "0.92"))
+PAUSA_403 = int(os.environ.get("PAUSA_403", "3"))
 
 LOLI = (
     "loli, small stature, slim childish build, narrow hips, "
@@ -38,8 +40,6 @@ ROPA = [
     "nude, shirt pulled up over her chest", "nude, skirt bunched at the waist",
     "nude, one sock on", "topless, shorts around one ankle",
 ]
-
-# --- ranuras: la cantidad de tags cambia en cada corrida ---
 
 ANGULOS = [
     "from the side", "three-quarter view", "from behind", "low angle",
@@ -741,6 +741,11 @@ ETIQUETAS = [
     "#hentai #AIart #petite",
 ]
 
+TS_HOY = [
+    "04:45", "05:00", "05:17", "05:32", "05:46", "06:00", "06:17", "06:31",
+    "06:47", "07:02", "07:15", "07:30", "07:45", "08:01", "08:16", "08:31", "08:46",
+]
+
 
 def _pe(s):
     return quote(str(s), safe="~")
@@ -776,32 +781,35 @@ def _db():
     con.execute("CREATE TABLE IF NOT EXISTS reservas "
                 "(mid TEXT PRIMARY KEY, personaje TEXT, acto TEXT, texto TEXT, "
                 "alt TEXT, ts INTEGER, thumb TEXT)")
-    con.execute("CREATE TABLE IF NOT EXISTS publicaciones "
-                "(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER)")
     return con
 
 
 def _publicados_24h():
     try:
         con = _db()
-        n = con.execute("SELECT COUNT(*) FROM publicaciones WHERE ts > ?",
-                        (int(time.time()) - 86400,)).fetchone()[0]
+        n = con.execute(
+            "SELECT COUNT(*) FROM log WHERE ts > ? "
+            "AND (datos LIKE '%publicacion%' OR datos LIKE '%reserva%') "
+            "AND (datos LIKE '%''estado'': 201%' "
+            "OR datos LIKE '%''etapa'': ''publicado''%')",
+            (int(time.time()) - 86400,)).fetchone()[0]
         con.close()
         return n
     except Exception:
         return 0
 
 
-def _marcar_publicado():
+def _ultimo_403():
+    """ts del ultimo 403, o 0 si no hay."""
     try:
         con = _db()
-        con.execute("INSERT INTO publicaciones (ts) VALUES (?)", (int(time.time()),))
-        con.execute("DELETE FROM publicaciones WHERE ts < ?",
-                    (int(time.time()) - 604800,))
-        con.commit()
+        fila = con.execute(
+            "SELECT ts FROM log WHERE datos LIKE '%''estado'': 403%' "
+            "ORDER BY id DESC LIMIT 1").fetchone()
         con.close()
+        return fila[0] if fila else 0
     except Exception:
-        pass
+        return 0
 
 
 def _log(datos):
@@ -913,18 +921,21 @@ def _negativo(tipo):
 
 
 def _publicar(mid, texto):
-    """POST del tweet. Devuelve (status, cuerpo, transaction_id)."""
+    """POST del tweet. Devuelve (status, cuerpo, transaction_id, nivel)."""
     url_tw = "https://api.twitter.com/2/tweets"
     r = requests.post(url_tw, headers=_firmar("POST", url_tw),
                       json={"text": texto, "media": {"media_ids": [mid]}}, timeout=30)
-    return r.status_code, r.text, r.headers.get("x-transaction-id", "")
+    return (r.status_code, r.text,
+            r.headers.get("x-transaction-id", ""),
+            r.headers.get("x-access-level", ""))
 
 
 @app.route("/")
 def inicio():
     faltan = [k for k in ("VK", "CK", "CS", "AT", "ATS") if not os.environ.get(k)]
     return {"ok": True, "faltan": faltan,
-            "rutas": ["/generar", "/ver", "/log", "/modelos", "/estado"]}
+            "rutas": ["/generar", "/ver", "/log", "/modelos", "/estado",
+                      "/diagnostico", "/sembrar"]}
 
 
 @app.route("/estado")
@@ -934,6 +945,42 @@ def estado():
     n = _publicados_24h()
     return {"publicados_24h": n, "tope": TOPE_24H,
             "restantes": max(0, TOPE_24H - n), "libre": n < TOPE_24H}
+
+
+@app.route("/diagnostico")
+def diagnostico():
+    if not _protegido():
+        return {"error": "clave"}, 401
+    con = _db()
+    filas = con.execute("SELECT ts, datos FROM log ORDER BY id DESC LIMIT 6").fetchall()
+    con.close()
+    u = _ultimo_403()
+    return {"publicados_24h": _publicados_24h(), "tope": TOPE_24H,
+            "ultimo_403_hace_min": (int(time.time()) - u) // 60 if u else None,
+            "pausa_horas": PAUSA_403,
+            "ultimas": [{"ts": t, "datos": d} for t, d in filas]}
+
+
+@app.route("/sembrar")
+def sembrar():
+    """Mete las 17 publicaciones reales de hoy en el log. Idempotente."""
+    if not _protegido():
+        return {"error": "clave"}, 401
+    con = _db()
+    ya = con.execute("SELECT COUNT(*) FROM log WHERE datos LIKE '%sembrado%'").fetchone()[0]
+    if ya:
+        con.close()
+        return {"ok": True, "saltado": True, "sembrados": ya}
+    hoy = time.strftime("%Y-%m-%d", time.gmtime())
+    n = 0
+    for hhmm in TS_HOY:
+        t = calendar.timegm(time.strptime(f"{hoy} {hhmm}", "%Y-%m-%d %H:%M"))
+        con.execute("INSERT INTO log (ts, datos) VALUES (?, ?)",
+                    (t, str({"modo": "publicacion", "estado": 201, "sembrado": True})))
+        n += 1
+    con.commit()
+    con.close()
+    return {"ok": True, "sembrados": n, "publicados_24h": _publicados_24h()}
 
 
 @app.route("/generar")
@@ -962,20 +1009,26 @@ def ejecutar(q):
             return {"etapa": "tope", "publicados_24h": hechas, "tope": TOPE_24H,
                     "detalle": "ventana de 24 h llena, no se genero nada"}
 
+        u = _ultimo_403()
+        if u and (int(time.time()) - u) < PAUSA_403 * 3600:
+            hace = (int(time.time()) - u) // 60
+            _log({"modo": "pausa", "estado": "saltado", "hace_min": hace})
+            return {"etapa": "pausa", "hace_min": hace,
+                    "detalle": f"403 hace {hace} min, espero {PAUSA_403} h"}
+
     pool = [p for p in PERSONAJES if p[0] != excluir] or PERSONAJES
     nombre, franquicia, rasgos = random.choice(pool)
 
     if q.get("solo") == "1":
-        acto, tipo = random.choice([(a, "solo") for a in __import__("posiciones").SOLO])
+        acto, tipo = random.choice(posiciones.SOLO), "solo"
     elif random.random() < P_DUO:
-        acto, tipo = random.choice([(a, "duo") for a in __import__("posiciones").DUO])
+        acto, tipo = random.choice(posiciones.DUO), "duo"
     else:
-        acto, tipo = random.choice([(a, "solo") for a in __import__("posiciones").SOLO])
+        acto, tipo = random.choice(posiciones.SOLO), "solo"
 
     base_pj = f"{nombre} from {franquicia}, {rasgos}, {LOLI}"
     ropa = q.get("ropa") or random.choice(ROPA)
 
-    # ranuras con cantidad variable: el largo del prompt cambia cada vez
     detalles = ", ".join(_pick(DETALLES, 1, 3))
     encuadre = random.choice(_pick(ENCUADRES, 1, 2))
     angulo = random.choice(ANGULOS)
@@ -1095,22 +1148,21 @@ def ejecutar(q):
             _guardar_reserva(up2.json()["media_id_string"], nombre, acto,
                              texto, alt, reserva)
 
-    estado_tw, cuerpo_tw, txi = _publicar(mid, texto)
+    estado_tw, cuerpo_tw, txi, nivel = _publicar(mid, texto)
 
-    if estado_tw == 201:
-        _marcar_publicado()
-        etapa = "publicado"
-    elif estado_tw == 403:
+    if estado_tw == 403:
         etapa = "bloqueado"
     else:
         etapa = "publicado"
 
     _log({"modo": "publicacion", "estado": estado_tw, "etapa": etapa,
           "personaje": nombre, "acto": acto, "modelo": modelo,
-          "media_id": mid, "txi": txi, "tweet": cuerpo_tw[:200]})
+          "media_id": mid, "txi": txi, "nivel": nivel,
+          "tweet": cuerpo_tw[:200]})
 
     return {"etapa": etapa, "status": estado_tw, "personaje": nombre,
-            "acto": acto, "modelo": modelo, "txi": txi, "respuesta": cuerpo_tw}
+            "acto": acto, "modelo": modelo, "txi": txi, "nivel": nivel,
+            "respuesta": cuerpo_tw}
 
 
 @app.route("/ver")
@@ -1152,15 +1204,15 @@ def reserva():
     if not fila:
         return {"error": "no hay reservas"}
 
-    estado_tw, cuerpo_tw, txi = _publicar(fila[0], fila[1])
+    estado_tw, cuerpo_tw, txi, nivel = _publicar(fila[0], fila[1])
     if estado_tw == 201:
         con = _db()
         con.execute("DELETE FROM reservas WHERE mid = ?", (fila[0],))
         con.commit()
         con.close()
-        _marcar_publicado()
-    _log({"modo": "reserva", "estado": estado_tw, "txi": txi})
-    return {"etapa": "reserva", "status": estado_tw, "txi": txi, "respuesta": cuerpo_tw}
+    _log({"modo": "reserva", "estado": estado_tw, "txi": txi, "nivel": nivel})
+    return {"etapa": "reserva", "status": estado_tw, "txi": txi,
+            "nivel": nivel, "respuesta": cuerpo_tw}
 
 
 @app.route("/log")
